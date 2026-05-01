@@ -60,7 +60,9 @@ enum AiLevel {
     CHAMPION("Champion 2450", 7, 0, true, 3_700_000),
     GRANDMASTER("Grandmaster 2600", 8, 0, true, 4_500_000),
     ANALYSIS_FAST("Analysis fast depth 6", 6, 0, true, 2_500_000),
-    ANALYSIS("Analysis depth 8", 8, 0, true, 5_200_000);
+    ANALYSIS("Analysis depth 8", 8, 0, true, 5_200_000),
+    SUPER_GRANDMASTER("Super Grandmaster 2850", 9, 0, true, 8_000_000),
+    ULTRA_ANALYSIS("Ultra Analysis depth 10", 10, 0, true, 15_000_000);
 
     final String label;
     final int depth;
