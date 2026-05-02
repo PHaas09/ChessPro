@@ -819,6 +819,92 @@ class ChessProTest {
     }
 
     @Nested
+    @DisplayName("Saved games and replay data")
+    class SavedGameStorageTests {
+
+        @Test
+        @DisplayName("Saved games round-trip moves, base FEN and final board")
+        void savedGameRoundTripWorks(@TempDir Path tempDir) throws IOException {
+            Board board = Board.starting();
+            String base = board.toFen();
+            play(board, "e2e4");
+            play(board, "e7e5");
+            play(board, "g1f3");
+
+            Path file = GameStorage.save(tempDir, board, base, "My Saved: Game");
+            SavedGame saved = GameStorage.load(file);
+            Board loaded = saved.toBoard();
+
+            assertTrue(Files.exists(file));
+            assertTrue(file.getFileName().toString().endsWith(GameStorage.EXTENSION));
+            assertFalse(file.getFileName().toString().contains(":"));
+            assertEquals("My Saved: Game", saved.name);
+            assertEquals(base, saved.baseFen);
+            assertEquals(List.of("e2e4", "e7e5", "g1f3"), saved.moves);
+            assertEquals(board.toFen(), loaded.toFen());
+            assertEquals(3, loaded.history.size());
+        }
+
+        @Test
+        @DisplayName("Saved-game file contains readable metadata and coordinate moves")
+        void savedGameFileContainsExpectedData(@TempDir Path tempDir) throws IOException {
+            Board board = Board.starting();
+            String base = board.toFen();
+            play(board, "d2d4");
+            play(board, "d7d5");
+
+            Path file = GameStorage.save(tempDir, board, base, "Queen Pawn Test");
+            String text = Files.readString(file, StandardCharsets.UTF_8);
+
+            assertTrue(text.startsWith(GameStorage.MAGIC));
+            assertTrue(text.contains("baseFen="));
+            assertTrue(text.contains("finalFen="));
+            assertTrue(text.contains("moves=d2d4 d7d5"));
+        }
+
+        @Test
+        @DisplayName("moveFromCoordinate supports promotion coordinates")
+        void moveFromCoordinateSupportsPromotion() {
+            Board board = Board.fromFen("4k3/P7/8/8/8/8/8/4K3 w - - 0 1");
+
+            Move move = GameStorage.moveFromCoordinate(board, "a7a8q");
+
+            assertNotNull(move);
+            assertEquals("a7a8q", move.coordinate());
+            assertEquals(Piece.QUEEN, move.promotion);
+        }
+
+        @Test
+        @DisplayName("Broken saved games are rejected while loading")
+        void brokenSavedGameIsRejected(@TempDir Path tempDir) throws IOException {
+            Path file = tempDir.resolve("broken.cpg");
+            String text = GameStorage.MAGIC + "\n"
+                    + "name=" + GameStorage.encode("Broken") + "\n"
+                    + "baseFen=" + GameStorage.encode(Board.starting().toFen()) + "\n"
+                    + "finalFen=" + GameStorage.encode("") + "\n"
+                    + "result=" + GameStorage.encode("*") + "\n"
+                    + "moves=e2e5\n";
+            Files.writeString(file, text, StandardCharsets.UTF_8);
+
+            assertThrows(IllegalArgumentException.class, () -> GameStorage.load(file));
+        }
+
+        @Test
+        @DisplayName("Review analysis cache reuses identical FEN searches")
+        void reviewAnalysisCacheReusesSameFen() {
+            Board board = Board.starting();
+            java.util.Map<String, ChessAI.SearchResult> cache = new java.util.HashMap<>();
+
+            ChessAI.SearchResult first = GameReview.analyzeCached(cache, board, AiLevel.TRAINING_400);
+            ChessAI.SearchResult second = GameReview.analyzeCached(cache, board, AiLevel.TRAINING_400);
+
+            assertSame(first, second);
+            assertEquals(1, cache.size());
+        }
+    }
+
+
+    @Nested
     @DisplayName("Puzzle book, themes and UI helpers")
     class UtilityTests {
 

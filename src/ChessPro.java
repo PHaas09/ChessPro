@@ -1358,10 +1358,11 @@ class GameReview {
         out.append("----------------------------------------------------------------------------------------------------------------\n");
 
         int moveNo = 1;
+        Map<String, ChessAI.SearchResult> analysisCache = new HashMap<>();
         for (Move original : played.history) {
             Side mover = b.turn;
             int before = ChessAI.evaluate(b);
-            ChessAI.SearchResult bestRes = ChessAI.analyze(b, level);
+            ChessAI.SearchResult bestRes = analyzeCached(analysisCache, b, level);
             Move best = bestRes.bestMove;
             int bestWhite = bestRes.scoreWhite;
 
@@ -1369,7 +1370,7 @@ class GameReview {
             if (playedMove == null) break;
             Board afterBoard = b.copy();
             afterBoard.makeMove(playedMove);
-            ChessAI.SearchResult afterRes = ChessAI.analyze(afterBoard, level);
+            ChessAI.SearchResult afterRes = analyzeCached(analysisCache, afterBoard, level);
             int afterWhite = afterRes.scoreWhite;
 
             int loss = mover == Side.WHITE ? bestWhite - afterWhite : afterWhite - bestWhite;
@@ -1394,9 +1395,19 @@ class GameReview {
         out.append("Black: ").append(summary(black)).append("\n\n");
         out.append("Notes:\n");
         out.append("- The reviewer now uses alpha-beta search, quiescence search, move ordering and a deeper evaluation.\n");
+        out.append("- Review analysis caches every FEN, so the after-position of one move is reused as the before-position of the next move.\n");
         out.append("- It is still a local Java engine, not Stockfish, but it is much more useful for finding blunders and better alternatives.\n");
         out.append("- Loss is measured in centipawns compared with the engine's preferred continuation.\n");
         return out.toString();
+    }
+
+    static ChessAI.SearchResult analyzeCached(Map<String, ChessAI.SearchResult> cache, Board b, AiLevel level) {
+        String key = level.name() + "|" + b.toFen();
+        ChessAI.SearchResult cached = cache.get(key);
+        if (cached != null) return cached;
+        ChessAI.SearchResult result = ChessAI.analyze(b, level);
+        cache.put(key, result);
+        return result;
     }
 
     static String classify(int loss, boolean sameAsBest, Move playedMove, Board before) {
@@ -1432,6 +1443,165 @@ class GameReview {
             if (legal.from == original.from && legal.to == original.to && legal.promotion == original.promotion) return legal;
         }
         return null;
+    }
+}
+
+
+class SavedGame {
+    final String name;
+    final long createdAt;
+    final String baseFen;
+    final String finalFen;
+    final String result;
+    final List<String> moves;
+
+    SavedGame(String name, long createdAt, String baseFen, String finalFen, String result, List<String> moves) {
+        this.name = name == null || name.trim().isEmpty() ? "Untitled game" : name.trim();
+        this.createdAt = createdAt;
+        this.baseFen = baseFen == null || baseFen.trim().isEmpty() ? Board.starting().toFen() : baseFen.trim();
+        this.finalFen = finalFen == null ? "" : finalFen.trim();
+        this.result = result == null || result.trim().isEmpty() ? "*" : result.trim();
+        this.moves = new ArrayList<>(moves == null ? Collections.emptyList() : moves);
+    }
+
+    Board toBoard() {
+        Board b;
+        try { b = Board.fromFen(baseFen); }
+        catch (Exception ex) { b = Board.starting(); }
+        for (String coordinate : moves) {
+            Move legal = GameStorage.moveFromCoordinate(b, coordinate);
+            if (legal == null) {
+                throw new IllegalArgumentException("Saved move is not legal in this position: " + coordinate);
+            }
+            b.makeMove(legal);
+        }
+        return b;
+    }
+
+    String moveText() { return String.join(" ", moves); }
+
+    String label() { return name + " | " + moves.size() + " plies | " + result; }
+}
+
+class GameStorage {
+    static final String MAGIC = "ChessProSavedGame V1";
+    static final String EXTENSION = ".cpg";
+
+    static Path defaultDir() {
+        return Paths.get(System.getProperty("user.home"), "chesspro_games");
+    }
+
+    static Path save(Board board, String baseFen, String name) throws IOException {
+        return save(defaultDir(), board, baseFen, name);
+    }
+
+    static Path save(Path dir, Board board, String baseFen, String name) throws IOException {
+        Objects.requireNonNull(board, "board");
+        Files.createDirectories(dir);
+        String cleanName = (name == null || name.trim().isEmpty()) ? "ChessPro game" : name.trim();
+        long created = System.currentTimeMillis();
+        String fileName = created + "_" + safeFileName(cleanName) + EXTENSION;
+        SavedGame saved = fromBoard(board, baseFen, cleanName, created);
+        Path file = dir.resolve(fileName);
+        Files.write(file, serialize(saved).getBytes(StandardCharsets.UTF_8));
+        return file;
+    }
+
+    static SavedGame fromBoard(Board board, String baseFen, String name, long createdAt) {
+        List<String> moves = new ArrayList<>();
+        for (Move m : board.history) moves.add(m.coordinate());
+        return new SavedGame(name, createdAt, baseFen, board.toFen(), board.resultString(), moves);
+    }
+
+    static SavedGame load(Path file) throws IOException {
+        List<String> lines = Files.readAllLines(file, StandardCharsets.UTF_8);
+        if (lines.isEmpty() || !MAGIC.equals(lines.get(0).trim())) {
+            throw new IOException("Not a ChessPro saved game file.");
+        }
+        Map<String, String> values = new LinkedHashMap<>();
+        for (int i = 1; i < lines.size(); i++) {
+            String line = lines.get(i);
+            int eq = line.indexOf('=');
+            if (eq <= 0) continue;
+            values.put(line.substring(0, eq), line.substring(eq + 1));
+        }
+        String name = decode(values.getOrDefault("name", encode("Untitled game")));
+        long createdAt = parseLong(values.get("createdAt"), Files.getLastModifiedTime(file).toMillis());
+        String baseFen = decode(values.getOrDefault("baseFen", encode(Board.starting().toFen())));
+        String finalFen = decode(values.getOrDefault("finalFen", encode("")));
+        String result = decode(values.getOrDefault("result", encode("*")));
+        String moveText = values.getOrDefault("moves", "").trim();
+        List<String> moves = new ArrayList<>();
+        if (!moveText.isEmpty()) {
+            for (String m : moveText.split("\\s+")) if (!m.trim().isEmpty()) moves.add(m.trim());
+        }
+        SavedGame saved = new SavedGame(name, createdAt, baseFen, finalFen, result, moves);
+        saved.toBoard();
+        return saved;
+    }
+
+    static List<Path> listSavedGames(Path dir) throws IOException {
+        if (!Files.exists(dir)) return new ArrayList<>();
+        List<Path> files = new ArrayList<>();
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir, "*" + EXTENSION)) {
+            for (Path file : stream) files.add(file);
+        }
+        files.sort((a, b) -> {
+            try { return Files.getLastModifiedTime(b).compareTo(Files.getLastModifiedTime(a)); }
+            catch (IOException ex) { return b.getFileName().toString().compareTo(a.getFileName().toString()); }
+        });
+        return files;
+    }
+
+    static String serialize(SavedGame saved) {
+        StringBuilder sb = new StringBuilder();
+        sb.append(MAGIC).append('\n');
+        sb.append("name=").append(encode(saved.name)).append('\n');
+        sb.append("createdAt=").append(saved.createdAt).append('\n');
+        sb.append("baseFen=").append(encode(saved.baseFen)).append('\n');
+        sb.append("finalFen=").append(encode(saved.finalFen)).append('\n');
+        sb.append("result=").append(encode(saved.result)).append('\n');
+        sb.append("moves=").append(saved.moveText()).append('\n');
+        return sb.toString();
+    }
+
+    static Move moveFromCoordinate(Board board, String coordinate) {
+        if (board == null || coordinate == null || coordinate.length() < 4) return null;
+        int from = Board.squareFromName(coordinate.substring(0, 2));
+        int to = Board.squareFromName(coordinate.substring(2, 4));
+        if (from < 0 || to < 0) return null;
+        int promotion = 0;
+        if (coordinate.length() >= 5) {
+            char ch = Character.toLowerCase(coordinate.charAt(4));
+            if (ch == 'q') promotion = board.turn.sign * Piece.QUEEN;
+            else if (ch == 'r') promotion = board.turn.sign * Piece.ROOK;
+            else if (ch == 'b') promotion = board.turn.sign * Piece.BISHOP;
+            else if (ch == 'n') promotion = board.turn.sign * Piece.KNIGHT;
+            else return null;
+        }
+        return board.findMatchingLegal(new Move(from, to, promotion));
+    }
+
+    static String safeFileName(String raw) {
+        String s = raw == null ? "game" : raw.trim();
+        if (s.isEmpty()) s = "game";
+        s = s.replaceAll("[^A-Za-z0-9._-]+", "_");
+        s = s.replaceAll("_+", "_");
+        if (s.length() > 48) s = s.substring(0, 48);
+        return s;
+    }
+
+    static String encode(String text) {
+        return Base64.getEncoder().encodeToString((text == null ? "" : text).getBytes(StandardCharsets.UTF_8));
+    }
+
+    static String decode(String text) {
+        return new String(Base64.getDecoder().decode(text), StandardCharsets.UTF_8);
+    }
+
+    static long parseLong(String text, long fallback) {
+        try { return Long.parseLong(text); }
+        catch (Exception ex) { return fallback; }
     }
 }
 
@@ -2037,9 +2207,13 @@ class ChessFrame extends JFrame {
     Board board = Board.starting();
     final EloStore elo = new EloStore();
     final Deque<Move> redoStack = new ArrayDeque<>();
+    final List<Move> replayMoves = new ArrayList<>();
 
     Theme theme = Theme.all()[0];
     String baseFen = Board.starting().toFen();
+    String replayBaseFen = baseFen;
+    int replayIndex = -1;
+    boolean gameAutoSaved = false;
     boolean aiThinking = false;
     int selected = -1;
     int hintFrom = -1;
@@ -2189,7 +2363,11 @@ class ChessFrame extends JFrame {
         JPanel p = verticalPanel();
         reviewArea.setEditable(false);
         reviewArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        p.add(section("Game review", buttonRow(button("Review game", e -> showReview()), button("Save review", e -> saveReview()), button("Copy PGN", e -> copyPgn())), scroll(reviewArea, 385, 590)));
+        p.add(section("Game review",
+                buttonRow(button("Review game", e -> showReview()), button("Save review", e -> saveReview()), button("Copy PGN", e -> copyPgn())),
+                buttonRow(button("Save game", e -> saveGame()), button("Load saved", e -> loadSavedGame()), button("Open saves", e -> openSavedGamesFolder())),
+                buttonRow(button("Replay start", e -> startReplay()), button("Previous", e -> replayPrevious()), button("Next", e -> replayNext()), button("Replay end", e -> replayEnd())),
+                scroll(reviewArea, 385, 520)));
         return scrollable(p);
     }
 
@@ -2197,7 +2375,7 @@ class ChessFrame extends JFrame {
         JPanel p = verticalPanel();
         toolsArea.setEditable(false);
         toolsArea.setFont(new Font(Font.MONOSPACED, Font.PLAIN, 12));
-        p.add(section("Files", buttonRow(button("Copy FEN", e -> copyFen()), button("Load FEN", e -> loadFen())), buttonRow(button("Copy PGN", e -> copyPgn()), button("Save PGN", e -> exportPgn())), buttonRow(button("Board PNG", e -> saveBoardImage()), button("ASCII", e -> copyAsciiBoard()))));
+        p.add(section("Files", buttonRow(button("Copy FEN", e -> copyFen()), button("Load FEN", e -> loadFen())), buttonRow(button("Copy PGN", e -> copyPgn()), button("Save PGN", e -> exportPgn())), buttonRow(button("Save game", e -> saveGame()), button("Load saved", e -> loadSavedGame()), button("Open saves", e -> openSavedGamesFolder())), buttonRow(button("Board PNG", e -> saveBoardImage()), button("ASCII", e -> copyAsciiBoard()))));
         p.add(section("Training and validation",
                 buttonRow(button("Puzzle", e -> startPuzzle()), button("Show solution", e -> showPuzzleSolution()), button("Legal moves", e -> listLegalMoves())),
                 buttonRow(button("Copy legal", e -> copyLegalMoves()), button("Reset Elo", e -> resetElo()), button("Coach advice", e -> showCoachAdvice())),
@@ -2399,6 +2577,10 @@ class ChessFrame extends JFrame {
         hintFrom = -1;
         hintTo = -1;
         puzzleActive = false;
+        gameAutoSaved = false;
+        replayMoves.clear();
+        replayBaseFen = baseFen;
+        replayIndex = -1;
         analysisArea.setText("New game started. Use Analyze for engine lines, Hint for a suggested move, or Review after the game.\n");
         reviewArea.setText("");
         toolsArea.setText("Opening book loaded with " + OpeningBook.LINES.size() + " training lines.\n");
@@ -2466,6 +2648,7 @@ class ChessFrame extends JFrame {
     }
 
     void afterMove(Move legal) {
+        replayIndex = -1;
         if (puzzleActive) checkPuzzleMove(legal);
         refresh();
         if (board.isGameOver()) finishGame();
@@ -2629,7 +2812,7 @@ class ChessFrame extends JFrame {
             return;
         }
         tabs.setSelectedIndex(3);
-        reviewArea.setText("Reviewing game. This can take a moment...\n");
+        reviewArea.setText("Reviewing game with cached analysis. This can take a moment...\n");
         final Board played = board;
         final String startFen = baseFen;
         SwingWorker<String, Void> worker = new SwingWorker<String, Void>() {
@@ -2648,6 +2831,10 @@ class ChessFrame extends JFrame {
             board = Board.fromFen(currentPuzzle.fen);
             baseFen = board.toFen();
             redoStack.clear();
+            replayMoves.clear();
+            replayBaseFen = baseFen;
+            replayIndex = -1;
+            gameAutoSaved = false;
             selected = -1;
             puzzleActive = true;
             toolsArea.setText("Puzzle: " + currentPuzzle.title + "\nFind the best move for " + board.turn + ".\n");
@@ -2788,6 +2975,10 @@ class ChessFrame extends JFrame {
             board = Board.fromFen(in.trim());
             baseFen = board.toFen();
             redoStack.clear();
+            replayMoves.clear();
+            replayBaseFen = baseFen;
+            replayIndex = -1;
+            gameAutoSaved = false;
             selected = -1;
             puzzleActive = false;
             refresh();
@@ -2846,6 +3037,138 @@ class ChessFrame extends JFrame {
         }
     }
 
+
+    void saveGame() {
+        if (board.history.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No moves to save yet.");
+            return;
+        }
+        String defaultName = "ChessPro game " + board.fullmoveNumber;
+        String name = JOptionPane.showInputDialog(this, "Saved game name:", defaultName);
+        if (name == null) return;
+        try {
+            Path saved = GameStorage.save(board, baseFen, name);
+            reviewArea.setText("Saved game:\n" + saved.toAbsolutePath() + "\n\nYou can load it later, replay every move, and run Review game on it.");
+            tabs.setSelectedIndex(3);
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this, "Could not save game:\n" + ex.getMessage(), "Save error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    void autoSaveFinishedGame() {
+        if (gameAutoSaved || board.history.isEmpty()) return;
+        try {
+            Path saved = GameStorage.save(board, baseFen, "Auto " + board.resultString().replaceAll("[^A-Za-z0-9._-]+", "_"));
+            gameAutoSaved = true;
+            toolsArea.setText("Game auto-saved to:\n" + saved.toAbsolutePath() + "\n");
+        } catch (IOException ex) {
+            toolsArea.setText("Auto-save failed: " + ex.getMessage() + "\n");
+        }
+    }
+
+    void loadSavedGame() {
+        if (aiThinking) return;
+        try { Files.createDirectories(GameStorage.defaultDir()); }
+        catch (IOException ignored) {}
+        JFileChooser chooser = new JFileChooser(GameStorage.defaultDir().toFile());
+        chooser.setFileFilter(new javax.swing.filechooser.FileNameExtensionFilter("ChessPro saved games (*.cpg)", "cpg"));
+        if (chooser.showOpenDialog(this) != JFileChooser.APPROVE_OPTION) return;
+        try {
+            SavedGame saved = GameStorage.load(chooser.getSelectedFile().toPath());
+            loadSavedGame(saved);
+            reviewArea.setText("Loaded saved game:\n" + saved.label() + "\n\nUse Replay start / Previous / Next / Replay end to rewatch it. Use Review game to review the loaded game.");
+            tabs.setSelectedIndex(3);
+        } catch (Exception ex) {
+            JOptionPane.showMessageDialog(this, "Could not load saved game:\n" + ex.getMessage(), "Load error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    void loadSavedGame(SavedGame saved) {
+        Board loaded = saved.toBoard();
+        board = loaded;
+        baseFen = saved.baseFen;
+        redoStack.clear();
+        replayMoves.clear();
+        replayMoves.addAll(loaded.history);
+        replayBaseFen = saved.baseFen;
+        replayIndex = replayMoves.size();
+        gameAutoSaved = true;
+        puzzleActive = false;
+        selected = -1;
+        hintFrom = -1;
+        hintTo = -1;
+        refresh();
+    }
+
+    void openSavedGamesFolder() {
+        try {
+            Path dir = GameStorage.defaultDir();
+            Files.createDirectories(dir);
+            if (Desktop.isDesktopSupported()) Desktop.getDesktop().open(dir.toFile());
+            else {
+                toolsArea.setText("Saved games folder:\n" + dir.toAbsolutePath() + "\n");
+                tabs.setSelectedIndex(4);
+            }
+        } catch (IOException ex) {
+            JOptionPane.showMessageDialog(this, "Could not open saved-games folder:\n" + ex.getMessage(), "Folder error", JOptionPane.ERROR_MESSAGE);
+        }
+    }
+
+    void startReplay() {
+        if (board.history.isEmpty() && replayMoves.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No moves to replay yet.");
+            return;
+        }
+        if (replayMoves.isEmpty() || replayIndex < 0) {
+            replayMoves.clear();
+            replayMoves.addAll(board.history);
+            replayBaseFen = baseFen;
+        }
+        replayTo(0);
+    }
+
+    void replayPrevious() {
+        if (replayMoves.isEmpty()) startReplay();
+        if (replayMoves.isEmpty()) return;
+        int target = replayIndex < 0 ? replayMoves.size() - 1 : Math.max(0, replayIndex - 1);
+        replayTo(target);
+    }
+
+    void replayNext() {
+        if (replayMoves.isEmpty()) startReplay();
+        if (replayMoves.isEmpty()) return;
+        int target = replayIndex < 0 ? 0 : Math.min(replayMoves.size(), replayIndex + 1);
+        replayTo(target);
+    }
+
+    void replayEnd() {
+        if (replayMoves.isEmpty()) startReplay();
+        if (replayMoves.isEmpty()) return;
+        replayTo(replayMoves.size());
+    }
+
+    void replayTo(int plyCount) {
+        Board b;
+        try { b = Board.fromFen(replayBaseFen); }
+        catch (Exception ex) { b = Board.starting(); replayBaseFen = b.toFen(); }
+        int limit = Math.max(0, Math.min(plyCount, replayMoves.size()));
+        for (int i = 0; i < limit; i++) {
+            Move legal = b.findMatchingLegal(replayMoves.get(i));
+            if (legal == null) break;
+            b.makeMove(legal);
+        }
+        board = b;
+        replayIndex = board.history.size();
+        selected = -1;
+        hintFrom = -1;
+        hintTo = -1;
+        refresh();
+        reviewArea.setText("Replay " + replayIndex + " / " + replayMoves.size() + " plies\n"
+                + (replayIndex == 0 ? "Start position" : "Last move: " + board.history.get(board.history.size() - 1).coordinate())
+                + "\n\nFEN:\n" + board.toFen() + "\n");
+        tabs.setSelectedIndex(3);
+    }
+
     void saveBoardImage() {
         JFileChooser chooser = new JFileChooser();
         chooser.setSelectedFile(new File("chesspro_board.png"));
@@ -2898,6 +3221,7 @@ class ChessFrame extends JFrame {
             elo.update(humanScore);
         }
         refresh();
+        autoSaveFinishedGame();
         JOptionPane.showMessageDialog(this, result + "\n" + elo.label(), "Game over", JOptionPane.INFORMATION_MESSAGE);
     }
 
