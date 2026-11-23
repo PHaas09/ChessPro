@@ -1,6 +1,55 @@
-# ChessPro - Ultimate Coach Edition
+<div align="center">
 
-ChessPro is a single-file Java chess program with a Swing GUI, legal chess rules, multiple playing modes, several AI levels, an opening book, hints, FEN support, PGN-like export, game review, and a simple local Elo system.
+# ♟️ ChessPro
+
+**A complete chess app in a single Java file: full rules, a real search engine, an opening book, puzzles and game review.**
+
+[![build](https://github.com/PHaas09/ChessPro/actions/workflows/build.yml/badge.svg)](https://github.com/PHaas09/ChessPro/actions/workflows/build.yml)
+![Java](https://img.shields.io/badge/Java-17%2B-ED8B00?logo=openjdk&logoColor=white)
+![Dependencies](https://img.shields.io/badge/dependencies-none-brightgreen)
+[![Download](https://img.shields.io/github/v/release/PHaas09/ChessPro?label=download)](https://github.com/PHaas09/ChessPro/releases/latest)
+
+<img src="docs/screenshot.png" alt="ChessPro: board, quick-start presets and training shortcuts" width="900">
+
+</div>
+
+## Highlights
+
+- **Search engine:** negamax with alpha-beta pruning, iterative deepening, transposition table, killer and history heuristics and quiescence search. At the "Grandmaster" level it searches 8 plies deep and up to 4.5 million nodes.
+- **Evaluation:** material, piece position, king safety, pawn structure, mobility, threats and space.
+- **All the rules:** castling, en passant, promotion, check, checkmate and stalemate, plus the fifty-move rule and insufficient material.
+- **Opening book** loaded from an editable text file ([`chesspro_openings.txt`](chesspro_openings.txt)).
+- **Training:** hints, random puzzles, an engine analysis that lists the best candidate moves, and a game review that marks mistakes and blunders.
+- **Tools:** FEN import and export, PGN export, undo and redo, several board themes and a local Elo rating.
+- **Modes:** human vs. human, human vs. AI (either color) and AI vs. AI.
+- **About 3,300 lines with zero dependencies.** Only the JDK is needed. **65 JUnit tests** cover move generation (including perft counts), the rules, the engine and saving.
+
+## Quick start
+
+**Download:** get `ChessPro.jar` and `chesspro_openings.txt` from the [latest release](https://github.com/PHaas09/ChessPro/releases/latest) and put them in the same folder. Then run:
+
+```bash
+java -jar ChessPro.jar
+```
+
+**From source (JDK 17+):**
+
+```bash
+javac -d out src/ChessPro.java
+java -cp out ChessPro
+```
+
+**Run the tests:**
+
+```bash
+curl -Lo junit.jar https://repo1.maven.org/maven2/org/junit/platform/junit-platform-console-standalone/1.11.3/junit-platform-console-standalone-1.11.3.jar
+javac -d out -cp junit.jar src/ChessPro.java test/ChessProTest.java
+java -jar junit.jar execute -cp out --select-class ChessProTest
+```
+
+---
+
+# Full documentation
 
 This version uses an external opening-book text file:
 
